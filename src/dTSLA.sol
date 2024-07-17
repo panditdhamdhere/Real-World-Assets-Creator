@@ -6,6 +6,7 @@ import {ConfirmedOwner} from "@chainlink/contracts/src/v0.8/shared/access/Confir
 import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/functions/dev/v1_0_0/libraries/FunctionsRequest.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {OracleLib, AggregatorV3Interface} from "./libraries/OracleLib.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
  * @title dTSLA
@@ -15,23 +16,37 @@ import {OracleLib, AggregatorV3Interface} from "./libraries/OracleLib.sol";
 
 contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     using FunctionsRequest for FunctionsRequest.Request;
+    using Strings for uint256;
 
-    //////////////////////////////////////////////
-    ///////////////////error//////////////////////
-    //////////////////////////////////////////////
+    /*//////////////////////////////////////////////////////////////
+                                ERRORS
+    //////////////////////////////////////////////////////////////*/
 
-    error dTSLA_NotEnoughCollateral();
+    error dTSLA__NotEnoughCollateral();
+    error dTSLA__DoesntMeetMinimumWithdrawalAmount();
+
+    /*//////////////////////////////////////////////////////////////
+                                ENUMS
+    //////////////////////////////////////////////////////////////*/
 
     enum MintOrRedeem {
         mint,
         redeem
     }
 
+    /*//////////////////////////////////////////////////////////////
+                                STRUCTS
+    //////////////////////////////////////////////////////////////*/
+
     struct dTslaRequest {
         uint256 amountOfToken;
         address requester;
         MintOrRedeem mintOrRedeem;
     }
+
+    /*//////////////////////////////////////////////////////////////
+                                VARIABLES
+    //////////////////////////////////////////////////////////////*/
 
     //Math constants
     uint256 constant PRECISION = 1e18;
@@ -51,19 +66,26 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     uint256 constant MINIMUM_WITHDRAWAL_AMOUNT = 100e18;
     uint64 immutable i_subId;
     string private s_mintSourceCode;
+    string private s_redeemSourceCode;
     uint256 private s_portfolioBalance;
     mapping(bytes32 requestId => dTslaRequest request)
         private s_requestIdToRequest;
 
+    /*//////////////////////////////////////////////////////////////
+                                FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
     constructor(
         string memory mintSourceCode,
-        uint64 subId
+        uint64 subId,
+        string memory redeemSourceCode
     )
         ConfirmedOwner(msg.sender)
         FunctionsClient(SEPOLIA_FUNCTIONS_ROUTER)
         ERC20("dTSLA", "dTSLA")
     {
         s_mintSourceCode = mintSourceCode;
+        s_redeemSourceCode = redeemSourceCode;
         i_subId = subId;
     }
 
@@ -109,7 +131,7 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
             _getCollateralRatioAdjustedTotalBalance(amountOfTokensToMint) >
             s_portfolioBalance
         ) {
-            revert dTSLA_NotEnoughCollateral();
+            revert dTSLA__NotEnoughCollateral();
         }
 
         if (amountOfTokensToMint != 0) {
@@ -131,6 +153,32 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
         uint256 amountTslaInUsdc = getUsdcValueOfUsd(
             getUsdValueOfTsla(amountdTsla)
         );
+
+        if (amountTslaInUsdc < MINIMUM_WITHDRAWAL_AMOUNT) {
+            revert dTSLA__DoesntMeetMinimumWithdrawalAmount();
+        }
+
+        FunctionsRequest.Request memory req;
+        req.initializeRequestForInlineJavaScript(s_redeemSourceCode);
+
+        string[] memory args = new string[](2);
+        args[0] = amountdTsla.toString();
+        args[1] = amountTslaInUsdc.toString();
+        req.setArgs(args);
+
+        bytes32 requestId = _sendRequest(
+            req.encodeCBOR(),
+            i_subId,
+            GAS_LIMIT,
+            DON_ID
+        );
+        s_requestIdToRequest[requestId] = dTslaRequest(
+            amountdTsla,
+            msg.sender,
+            MintOrRedeem.redeem
+        );
+
+        _burn(msg.sender, amountdTsla);
     }
 
     function _redeemFulFillRequest(
