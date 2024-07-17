@@ -4,6 +4,8 @@ pragma solidity 0.8.25;
 import {FunctionsClient} from "@chainlink/contracts/src/v0.8/functions/dev/v1_0_0/FunctionsClient.sol";
 import {ConfirmedOwner} from "@chainlink/contracts/src/v0.8/shared/access/ConfirmedOwner.sol";
 import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/functions/dev/v1_0_0/libraries/FunctionsRequest.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {OracleLib, AggregatorV3Interface} from "./libraries/OracleLib.sol";
 
 /**
  * @title dTSLA
@@ -11,8 +13,14 @@ import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/functions/dev/v1_0
  * @notice
  */
 
-contract dTSLA is ConfirmedOwner, FunctionsClient {
+contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     using FunctionsRequest for FunctionsRequest.Request;
+
+    //////////////////////////////////////////////
+    ///////////////////error//////////////////////
+    //////////////////////////////////////////////
+
+    error dTSLA_NotEnoughCollateral();
 
     enum MintOrRedeem {
         mint,
@@ -25,20 +33,36 @@ contract dTSLA is ConfirmedOwner, FunctionsClient {
         MintOrRedeem mintOrRedeem;
     }
 
+    //Math constants
+    uint256 constant PRECISION = 1e18;
+
     address constant SEPOLIA_FUNCTIONS_ROUTER =
         0xb83E47C2bC239B3bf370bc41e1459A34b41238D0;
+    address constant SEPOLIA_TSLA_PRICE_FEED =
+        0xc59E3633BAAC79493d908e63626716e204A45EdF; // This is actually LINK/USD for demo or test purposes
+    address constant SEPOLIA_USDC_PRICE_FEED =
+        0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E;
+    uint256 constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint32 constant GAS_LIMIT = 300_000;
     bytes32 constant DON_ID =
         hex"66756e2d657468657265756d2d7365706f6c69612d3100000000000000000000";
+    uint256 constant COLLATERAL_RATIO = 200; // 200% collateral ratio
+    uint256 constant COLLATERAL_PRECISION = 100;
+    uint256 constant MINIMUM_WITHDRAWAL_AMOUNT = 100e18;
     uint64 immutable i_subId;
     string private s_mintSourceCode;
+    uint256 private s_portfolioBalance;
     mapping(bytes32 requestId => dTslaRequest request)
         private s_requestIdToRequest;
 
     constructor(
         string memory mintSourceCode,
         uint64 subId
-    ) ConfirmedOwner(msg.sender) FunctionsClient(SEPOLIA_FUNCTIONS_ROUTER) {
+    )
+        ConfirmedOwner(msg.sender)
+        FunctionsClient(SEPOLIA_FUNCTIONS_ROUTER)
+        ERC20("dTSLA", "dTSLA")
+    {
         s_mintSourceCode = mintSourceCode;
         i_subId = subId;
     }
@@ -68,7 +92,33 @@ contract dTSLA is ConfirmedOwner, FunctionsClient {
         return requestId;
     }
 
-    function _mintFulFillRequest() internal {}
+    /// Return the amount of TSLA value (in USD) is stored in our broker
+    /// If we have enough TSLA token, mint the dTSLA
+    function _mintFulFillRequest(
+        bytes32 requestId,
+        bytes memory response
+    ) internal {
+        uint256 amountOfTokensToMint = s_requestIdToRequest[requestId]
+            .amountOfToken;
+        s_portfolioBalance = uint256(bytes32(response));
+
+        // If the TSLA Collateral (how much TSLA we've bought) > dTSLA to mint -> mint
+        // How much TSLA in $$$ do we have
+        // How much TSLA in $$$ are we minting?
+        if (
+            _getCollateralRatioAdjustedTotalBalance(amountOfTokensToMint) >
+            s_portfolioBalance
+        ) {
+            revert dTSLA_NotEnoughCollateral();
+        }
+
+        if (amountOfTokensToMint != 0) {
+            _mint(
+                s_requestIdToRequest[requestId].requester,
+                amountOfTokensToMint
+            );
+        }
+    }
 
     /// @notice USER sends a request to sell TSLA for USDC or (Redemption token )
     // This , have the chainlink function call our alpaca(bank)
@@ -77,7 +127,73 @@ contract dTSLA is ConfirmedOwner, FunctionsClient {
     // 2. Buy USDC on the brokerage
     // 3. Send USDC to this contract for the user to withdraw
 
-    function sendRedeemRequest() external {}
+    function sendRedeemRequest(uint256 amountdTsla) external {
+        uint256 amountTslaInUsdc = getUsdcValueOfUsd(
+            getUsdValueOfTsla(amountdTsla)
+        );
+    }
 
-    function _redeemFulFillRequest() internal {}
+    function _redeemFulFillRequest(
+        bytes32 requestId,
+        bytes memory response
+    ) internal {}
+
+    function fulfillRequest(
+        bytes32 requestId,
+        bytes memory response,
+        bytes memory /*err*/
+    ) internal override {
+        if (s_requestIdToRequest[requestId].mintOrRedeem == MintOrRedeem.mint) {
+            _mintFulFillRequest(requestId, response);
+        } else {
+            _redeemFulFillRequest(requestId, response);
+        }
+    }
+
+    function _getCollateralRatioAdjustedTotalBalance(
+        uint256 amountOfTokensToMint
+    ) internal view returns (uint256) {
+        uint256 calculatedNewTotalValue = getCalculatedNewTotalValue(
+            amountOfTokensToMint
+        );
+        return
+            (calculatedNewTotalValue * COLLATERAL_RATIO) / COLLATERAL_PRECISION;
+    }
+
+    // The new expected total value in usd of all the dTSLA tokens combined
+    function getCalculatedNewTotalValue(
+        uint256 addedNumberOfTokens
+    ) internal view returns (uint256) {
+        return
+            ((totalSupply() + addedNumberOfTokens) * getTslaPrice()) /
+            PRECISION;
+    }
+
+    function getUsdcValueOfUsd(
+        uint256 usdAmount
+    ) public view returns (uint256) {
+        return (usdAmount * getUsdcPrice()) / PRECISION;
+    }
+
+    function getUsdValueOfTsla(
+        uint256 tslaAmount
+    ) public view returns (uint256) {
+        return (tslaAmount * getTslaPrice()) / PRECISION;
+    }
+
+    function getTslaPrice() public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(
+            SEPOLIA_TSLA_PRICE_FEED
+        );
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        return uint256(price) * ADDITIONAL_FEED_PRECISION; // so that we have 18 decimals;
+    }
+
+    function getUsdcPrice() public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(
+            SEPOLIA_USDC_PRICE_FEED
+        );
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        return uint256(price) * ADDITIONAL_FEED_PRECISION; // so that we have 18 decimals;
+    }
 }
