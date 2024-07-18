@@ -51,12 +51,14 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     //Math constants
     uint256 constant PRECISION = 1e18;
 
+    // constant variables
     address constant SEPOLIA_FUNCTIONS_ROUTER =
         0xb83E47C2bC239B3bf370bc41e1459A34b41238D0;
     address constant SEPOLIA_TSLA_PRICE_FEED =
         0xc59E3633BAAC79493d908e63626716e204A45EdF; // This is actually LINK/USD for demo or test purposes
     address constant SEPOLIA_USDC_PRICE_FEED =
         0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E;
+        address constant SEPOLIA_USDC = 
     uint256 constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint32 constant GAS_LIMIT = 300_000;
     bytes32 constant DON_ID =
@@ -64,12 +66,20 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     uint256 constant COLLATERAL_RATIO = 200; // 200% collateral ratio
     uint256 constant COLLATERAL_PRECISION = 100;
     uint256 constant MINIMUM_WITHDRAWAL_AMOUNT = 100e18;
+
+    // immutable variables
     uint64 immutable i_subId;
+
+    // private variables
     string private s_mintSourceCode;
     string private s_redeemSourceCode;
     uint256 private s_portfolioBalance;
+
+    // mapping
     mapping(bytes32 requestId => dTslaRequest request)
         private s_requestIdToRequest;
+    mapping(address user => uint256 pendingWithdrawalAmount)
+        private s_userToWithdrawalAmount;
 
     /*//////////////////////////////////////////////////////////////
                                 FUNCTIONS
@@ -184,7 +194,29 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     function _redeemFulFillRequest(
         bytes32 requestId,
         bytes memory response
-    ) internal {}
+    ) internal {
+        uint256 usdcAmount = uint256(bytes32(response));
+        if (usdcAmount == 0) {
+            uint256 amountOfdTSLABurned = s_requestIdToRequest[requestId]
+                .amountOfToken;
+            _mint(
+                s_requestIdToRequest[requestId].requester,
+                amountOfdTSLABurned
+            );
+            return;
+        }
+
+        s_userToWithdrawalAmount[
+            s_requestIdToRequest[requestId].requester
+        ] += usdcAmount;
+    }
+
+    function withdraw() external {
+        uint256 amountToWithdraw = s_userToWithdrawalAmount[msg.sender];
+        s_userToWithdrawalAmount[msg.sender] = 0;
+
+        ERC20()
+    }
 
     function fulfillRequest(
         bytes32 requestId,
