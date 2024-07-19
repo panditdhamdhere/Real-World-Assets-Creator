@@ -24,6 +24,7 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
 
     error dTSLA__NotEnoughCollateral();
     error dTSLA__DoesntMeetMinimumWithdrawalAmount();
+    error dTSLA_TransferFailed();
 
     /*//////////////////////////////////////////////////////////////
                                 ENUMS
@@ -58,7 +59,7 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
         0xc59E3633BAAC79493d908e63626716e204A45EdF; // This is actually LINK/USD for demo or test purposes
     address constant SEPOLIA_USDC_PRICE_FEED =
         0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E;
-        address constant SEPOLIA_USDC = 
+    address constant SEPOLIA_USDC = 0x91230278da20DaFF55ee6eBE7604B6f0eC79ffD6;
     uint256 constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint32 constant GAS_LIMIT = 300_000;
     bytes32 constant DON_ID =
@@ -215,7 +216,12 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
         uint256 amountToWithdraw = s_userToWithdrawalAmount[msg.sender];
         s_userToWithdrawalAmount[msg.sender] = 0;
 
-        ERC20()
+        bool success = ERC20(0x91230278da20DaFF55ee6eBE7604B6f0eC79ffD6)
+            .transfer(msg.sender, amountToWithdraw);
+
+        if (!success) {
+            revert dTSLA_TransferFailed();
+        }
     }
 
     function fulfillRequest(
@@ -275,5 +281,45 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
         );
         (, int256 price, , , ) = priceFeed.latestRoundData();
         return uint256(price) * ADDITIONAL_FEED_PRECISION; // so that we have 18 decimals;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        VIEW & PURE FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
+    function getRequest(
+        bytes32 requestId
+    ) public view returns (dTslaRequest memory) {
+        return s_requestIdToRequest[requestId];
+    }
+
+    function getPendingWithdrawalAmount(
+        address user
+    ) public view returns (uint256) {
+        return s_userToWithdrawalAmount[user];
+    }
+
+    function getPortfolioBalance() public view returns (uint256) {
+        return s_portfolioBalance;
+    }
+
+    function getSubId() public view returns (uint64) {
+        return i_subId;
+    }
+
+    function getMintSourceCode() public view returns (string memory) {
+        return s_mintSourceCode;
+    }
+
+    function getRedeemSourceCode() public view returns (string memory) {
+        return s_redeemSourceCode;
+    }
+
+    function getCollateralRatio() public pure returns (uint256) {
+        return COLLATERAL_RATIO;
+    }
+
+    function getCollateralPrecision() public pure returns (uint256) {
+        return COLLATERAL_PRECISION;
     }
 }
