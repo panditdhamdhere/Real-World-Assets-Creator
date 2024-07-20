@@ -1,5 +1,9 @@
 {
+  "scripts": {
+    "simulate": "node -r dotenv/config ./functions/simulators/alpacaMintSimulator.js"
+  },
   "dependencies": {
-    "@chainlink/functions-toolkit": "^0.2.8"
+    "@chainlink/functions-toolkit": "^0.2.8",
+    "dotenv": "^16.4.5"
   }
 }
