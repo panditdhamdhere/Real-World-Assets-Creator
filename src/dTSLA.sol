@@ -75,6 +75,10 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     string private s_mintSourceCode;
     string private s_redeemSourceCode;
     uint256 private s_portfolioBalance;
+    bytes32 private s_mostRecentRequestID;
+
+    uint8 donHostedSecretsVersion = 0;
+    uint64 donHostedSecretsSlotID = 1712769962;
 
     // mapping
     mapping(bytes32 requestId => dTslaRequest request)
@@ -100,6 +104,10 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
         i_subId = subId;
     }
 
+    function setMintSource(string memory mintSourceCode) external onlyOwner {
+        s_mintSourceCode = mintSourceCode;
+    }
+
     /// Send an HTTP request to:
     // 1. How much TSLA is bought
     // 2. If enough TSLA is in the alpaca account,
@@ -111,12 +119,17 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
     ) external onlyOwner returns (bytes32) {
         FunctionsRequest.Request memory req;
         req.initializeRequestForInlineJavaScript(s_mintSourceCode);
+        req.addDONHostedSecrets(
+            donHostedSecretsVersion,
+            donHostedSecretsSlotID
+        );
         bytes32 requestId = _sendRequest(
             req.encodeCBOR(),
             i_subId,
             GAS_LIMIT,
             DON_ID
         );
+        s_mostRecentRequestID = requestId;
         s_requestIdToRequest[requestId] = dTslaRequest(
             amount,
             msg.sender,
@@ -188,7 +201,7 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
             msg.sender,
             MintOrRedeem.redeem
         );
-
+        s_mostRecentRequestID = requestId;
         _burn(msg.sender, amountdTsla);
     }
 
@@ -224,16 +237,48 @@ contract dTSLA is ConfirmedOwner, FunctionsClient, ERC20 {
         }
     }
 
+    // function fulfillRequest(
+    //     bytes32 requestId,
+    //     bytes memory response,
+    //     bytes memory /*err*/
+    // ) internal override {
+    //     if (s_requestIdToRequest[requestId].mintOrRedeem == MintOrRedeem.mint) {
+    //         _mintFulFillRequest(requestId, response);
+    //     } else {
+    //         _redeemFulFillRequest(requestId, response);
+    //     }
+    // }
+
     function fulfillRequest(
         bytes32 requestId,
         bytes memory response,
         bytes memory /*err*/
     ) internal override {
-        if (s_requestIdToRequest[requestId].mintOrRedeem == MintOrRedeem.mint) {
-            _mintFulFillRequest(requestId, response);
-        } else {
-            _redeemFulFillRequest(requestId, response);
+        // if (s_requestIdToRequest[requestId].mintOrRedeem == MintOrRedeem.mint) {
+        //     _mintFulFillRequest(requestId, response);
+        // } else {
+        //     _redeemFulFillRequest(requestId, response);
+        // }
+
+        s_portfolioBalance = uint256(bytes32(response));
+    }
+
+    function finishMint() external onlyOwner {
+        uint256 amountOfTokensToMint = s_requestIdToRequest[
+            s_mostRecentRequestID
+        ].amountOfToken;
+
+        if (
+            _getCollateralRatioAdjustedTotalBalance(amountOfTokensToMint) >
+            s_portfolioBalance
+        ) {
+            revert dTSLA__NotEnoughCollateral();
         }
+        
+        _mint(
+            s_requestIdToRequest[s_mostRecentRequestID].requester,
+            amountOfTokensToMint
+        );
     }
 
     function _getCollateralRatioAdjustedTotalBalance(
